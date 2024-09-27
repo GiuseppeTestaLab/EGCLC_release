@@ -1,0 +1,360 @@
+---
+title: "Exploratory Data Analysis"
+author: "Gaja Matassa"
+date: 'Date: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        theme: 'united'
+        highlight: 'kate'
+        code_folding: hide
+params: 
+    InputFolder: '~/DataDir/0.Preprocessing/Output/'
+    MetadataFolder: '~/DataDir/1.PreliminaryAnalysis/Input/'
+    OutputFolder: '~/DataDir/1.PreliminaryAnalysis/Output/WithSelectedEGCLCs/'
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+
+library(bsseq)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(DT)
+library(dmrseq)
+library(methylSig)
+
+source("~/EGCLC_release/EMSeq/Methylation_helper.R")
+```
+
+```{r, collapse=TRUE}
+for (i in 1:length(params))
+  print(paste('Parameter:', names(params)[i], ' - Value:', params[[i]], '- Class:', class(params[[i]])))
+```
+
+```{r, collapse=TRUE}
+InputFolder <- params$InputFolder
+MetadataFolder <- params$MetadataFolder
+OutputFolder <- params$OutputFolder
+
+if (dir.exists(OutputFolder) == FALSE) {
+  dir.create(OutputFolder, recursive=TRUE)
+}
+```
+
+**Colors for figures**
+
+```{r}
+sample_colors <- c("3_EG2_SL" = "#ff7f00", "3_EG9_SL" = "#ff7f00", "3_EG31_SL" = "#ff7f00",
+                   "2S" = "#dd1c77", "3S" = "#dd1c77", "5S" = "#dd1c77", "4S" = "#dd1c77",
+                   "2M" = "#377eb8", "3M" = "#377eb8", "5M" = "#377eb8", "4M" = "#377eb8",
+                   "2P" = "#4daf4a", "3P" = "#4daf4a", "5P" = "#4daf4a")
+
+cellTypes_colors <- c(hiPSCs ="#dd1c77", iMeLCs ="#377eb8", hPGCLCs ="#4daf4a", hEGCLCs = "#ff7f00")
+```
+
+# 1. Loading data
+
+BedGraph files in input are already merged (from individual Cytosines in a CpG to per-CpG metrics) and filtered (threshold: 10 reads). Here bedIntersect was already used to keep only on-bait CpGs.
+
+```{r, collapse=TRUE}
+bdg_files <-  list.files(path = InputFolder, pattern = '*\\.bedGraph', full.names = TRUE) #output from our preprocessing
+```
+
+```{r, collapse=TRUE}
+bdg_files_filtered <- bdg_files[grep("filtered", bdg_files)]
+```
+
+**SAMPLE SELECTION ALREADY DECIDED!**
+
+They are to be filtered out:
+
+-   4P (hPGCLCs) because low-quality
+
+-   Late hPGCLCs
+
+-   EGCLCs in E8 medium (both low and normal oxygen) and normal oxygen in StemFit medium
+
+Data frame of sample annotation is taken as input (with only selected samples kept).
+
+```{r, collapse=TRUE}
+sample_anno <- read.table(paste0(MetadataFolder, "/DataAnn_ordered_final.txt"), sep='\t', header=TRUE)
+rownames(sample_anno) <- sample_anno$SampleID
+```
+
+Keeping only bedGraph files of selected samples.
+
+```{r, collapse=TRUE}
+bdg_files_filtered <- bdg_files_filtered[which(grepl(paste(sample_anno$SampleID, collapse = "|"), bdg_files_filtered) )]
+```
+
+Match order
+
+```{r, collapse=TRUE}
+bdg_files_filtered<-bdg_files_filtered[order(match(sub(".filtered.bedGraph", "", basename(bdg_files_filtered)), sample_anno$SampleID))]
+```
+
+# 2. Reading bedgraph files with `read.bismark` from **bsseq** package
+
+## 2.1 Generation of BSseq object
+
+`strandCollapse = FALSE` because MethylDackel has an option to destrand data when methylation calls are made so that the output is already destranded.
+
+```{r}
+if(identical(sub(".filtered.bedGraph", "", basename(bdg_files_filtered)), sample_anno$SampleID)){
+  bsseq_obj = bsseq::read.bismark(
+      files = bdg_files_filtered,
+      colData = sample_anno,
+      rmZeroCov = FALSE,
+      strandCollapse = FALSE #false if MethylDackel is used because MethylDackel has an option to destrand data when methylation calls are made so that the output is already destranded.
+  )  
+} else{stop("Sample names don't match between Bedgraph file and metadata")}
+```
+
+-   The number of samples in the BSSeq object is `r dim(bsseq_obj)[2]`.
+-   The number of CpGs in the BSSeq object is `r dim(bsseq_obj)[1]`.
+
+## 2.2 Exploration of BSseq object
+
+```{r}
+bsseq::pData(bsseq_obj)
+```
+
+`bsseq` package assumes that the following data has been extracted from alignments:
+
+1.  genomic positions, including chromosome and location, for methylation loci.The genomic positions are stored in the bsseq object as a `GRanges` object. `GRanges` are general genomic regions; they represent a single base methylation loci as an interval of width 1 (which may seem a bit strange, but they said there are good reasons for this).
+
+```{r}
+head(GenomicRanges::granges(bsseq_obj))
+```
+
+**Methylation calls are from these chromosomes:**
+
+```{r}
+levels(bsseq_obj@rowRanges@seqnames@values)
+```
+
+2.  a (matrix) of M (Methylation) values, describing the number of read supporting methylation covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
+
+```{r}
+Meth_matrix <- bsseq::getCoverage(bsseq_obj, type = 'M') 
+head(Meth_matrix)
+```
+
+3.  a (matrix) of Cov (Coverage) values, describing the total number of reads covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
+
+```{r}
+Cov_matrix <- bsseq::getCoverage(bsseq_obj, type = 'Cov')
+head(Cov_matrix)
+```
+
+0/0 gives NaN, this is the case when 0 methylated reads mapping on that region over 0 total reads mapping on that region.
+
+Methylation Proportions/Levels = Meth_matrix/Cov_matrix
+
+```{r}
+MethPerc_matrix <- (Meth_matrix/Cov_matrix)*100
+head(MethPerc_matrix)
+```
+
+This matrix can also be obtained like this:
+
+```{r}
+head(getMeth(BSseq = bsseq_obj, type = "raw"))
+```
+
+**Check whether there are regions with NaNs for all samples**
+
+Question: Is it true that there are no regions uncovered by any samples?
+
+```{r}
+all(apply(X = is.na(MethPerc_matrix), MARGIN = 1, FUN = sum) < ncol(MethPerc_matrix))
+```
+
+**Number of CpGs**
+
+```{r, collapse=TRUE}
+sample_anno$NumberCpGsPerSample <- colSums(Cov_matrix!=0)
+sample_anno$NumberCpGsinBSseq <- rep(nrow(bsseq_obj), ncol(bsseq_obj))
+sample_anno$PercCpGPerSampleinBSeq <- round((1-(colSums(Cov_matrix==0)/nrow(bsseq_obj)))*100, digits = 2)
+
+datatable(sample_anno, extensions = "Buttons", 
+            options = list(paging = TRUE,
+                           scrollX=TRUE, 
+                           searching = TRUE,
+                           ordering = TRUE,
+                           dom = 'Bfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf'),
+                           pageLength=10, 
+                           lengthMenu=c(3,5,10) ))
+```
+
+# 3. Exploratory plots
+
+The number of CpGs covered by at least one sample in the BSSeq object is `r dim(bsseq_obj)[1]`.
+
+## 3.1 Coverage distribution for all samples
+
+```{r, fig.width=13}
+plotEmpiricalDistribution(bsseq_obj, 
+                          bySample = TRUE,
+                          testCovariate = NULL,
+                          type = "Cov") + guides(linetype="none") + ggplot2::scale_color_manual(values = sample_colors)
+```
+
+```{r, fig.width=13}
+plotEmpiricalDistribution(bsseq_obj, 
+                          bySample = TRUE,
+                          testCovariate = "Type",
+                          type = "Cov") + guides(linetype="none") + ggplot2::scale_color_manual(values = cellTypes_colors)
+```
+
+## 3.2 Methylation levels distribution for all samples
+
+```{r, fig.width=13}
+plotEmpiricalDistribution(bsseq_obj, 
+                          bySample = TRUE,
+                          testCovariate = NULL,
+                          adj = 3) + guides(linetype="none") + ggplot2::scale_color_manual(values = sample_colors)
+```
+
+```{r, fig.width=13}
+plotEmpiricalDistribution(bsseq_obj, 
+                          bySample = TRUE,
+                          testCovariate = "Type",
+                          adj = 3) + guides(linetype="none") + ggplot2::scale_color_manual(values = cellTypes_colors)
+```
+
+## 3.3 Violin Plot showing mean
+
+```{r, collapse=TRUE, fig.width=10}
+violin_plot(MethPerc_matrix, stat="mean") + ggplot2::scale_fill_manual(values = sample_colors)
+```
+
+## 3.4 Violin Plot showing median
+
+```{r, collapse=TRUE, fig.width=10}
+violin_plot(MethPerc_matrix) + ggplot2::scale_fill_manual(values = sample_colors)
+```
+
+**Mean values for Coverage**
+
+```{r}
+apply(Cov_matrix, 2, mean, na.rm = TRUE)
+```
+
+**Median values for Coverage**
+
+```{r}
+apply(Cov_matrix, 2, median, na.rm = TRUE)
+```
+
+**Mean values for Methylation Proportions**
+
+```{r}
+apply(MethPerc_matrix, 2, mean, na.rm = TRUE)
+```
+
+**Median values for Methylation Proportions**
+
+```{r}
+apply(MethPerc_matrix, 2, median, na.rm = TRUE)
+```
+
+## 3.5 PCA plots
+
+### 3.5.1 All samples
+
+```{r, collapse=TRUE, fig.width=8}
+pca_res <- do_PCA(MethPerc_matrix)
+plot_PCA(pca_res = pca_res, anno = sample_anno, col_anno = "Type", shape_anno = NULL, custom_colors = cellTypes_colors, point_size = 5)
+```
+
+### 3.5.2 Without EGCLCs
+
+```{r,collapse=TRUE, fig.width=8}
+pca_res <- do_PCA(MethPerc_matrix[, sample_anno[!sample_anno$Type%in%c("hEGCLCs"),]$SampleID])
+plot_PCA(pca_res = pca_res, anno = sample_anno, col_anno = "Type", shape_anno = NULL, custom_colors = cellTypes_colors, point_size = 5)
+```
+
+### 3.5.3 Only EGCLCs and hiPSCs
+
+```{r,collapse=TRUE, fig.width=8}
+pca_res <- do_PCA(MethPerc_matrix[, sample_anno[sample_anno$Type%in%c("hEGCLCs", "hiPSCs"),]$SampleID])
+plot_PCA(pca_res = pca_res, anno = sample_anno, col_anno = "Type", shape_anno = NULL, custom_colors = cellTypes_colors, point_size = 5)
+```
+
+## 3.6 Dendogram plot
+
+```{r, fig.height=4, fig.width=8}
+d <- hclust(dist(t(MethPerc_matrix),
+                 method="euclidean"))
+#d$labels <- rownames(pData(bsseq_obj))
+d$labels <- rownames(sample_anno)
+  #paste0(pData(bsseq_obj)$Type, "_", pData(bsseq_obj)$InputDNA)
+dend <- as.dendrogram(d)
+plot(dend)
+```
+
+# 4. Filtering BSSeq object by shared CpGs
+
+-   The number of samples in the BSSeq object is `r dim(bsseq_obj)[2]`.
+-   The number of CpGs in the BSSeq object is `r dim(bsseq_obj)[1]`.
+-   The number of CpGs covered by at least 50% of samples in the BSSeq object is `r length(which(apply(X = is.na(getMeth(bsseq_obj, type="raw")), MARGIN = 1, FUN = sum) <= round(0.5*dim(bsseq_obj)[2], digits=0)))`.
+-   The number of CpGs covered by at least 75% of samples in the BSSeq object is `r length(which(apply(X = is.na(getMeth(bsseq_obj, type="raw")), MARGIN = 1, FUN = sum) <= round(0.25*dim(bsseq_obj)[2], digits=0)))`.
+-   The number of CpGs covered by all samples in the BSSeq object is `r length(which(apply(X = is.na(getMeth(bsseq_obj, type="raw")), MARGIN = 1, FUN = sum) == 0))`.
+
+```{r}
+table(sample_anno$Type)
+# dim(methylSig::filter_loci_by_group_coverage(
+#     bs = bsseq_obj,
+#     group_column = 'Type',
+#     min_samples_per_group = c('hEGCLCs' = 9, 'hiPSCs' = 2, 'iMeLCs' = 2, 'hPGCLCs' = 2 )))[1]
+```
+
+-   The number of CpGs covered by at least 50% of samples of the same type in the BSSeq object is `r dim(methylSig::filter_loci_by_group_coverage(bs = bsseq_obj,group_column = "Type", min_samples_per_group = c("hEGCLCs" = 1, "hiPSCs" = 2, "iMeLCs" = 2, "hPGCLCs" = 1)))[1]`.
+-   The number of CpGs covered by at least 75% of samples of the same type in the BSSeq object is `r dim(methylSig::filter_loci_by_group_coverage(bs = bsseq_obj,group_column = "Type", min_samples_per_group = c("hEGCLCs" = 2, "hiPSCs" = 3, "iMeLCs" = 3, "hPGCLCs" = 2)))[1]`.
+
+# 5. Saving and Session Info
+
+Saving BSSeq objects :
+
+-   Complete
+
+```{r SavingI, collapse=TRUE}
+saveRDS(bsseq_obj, file = paste0 (OutputFolder, "bsseq_obj_complete.rds"))
+```
+
+-   Filtered by sample
+
+```{r SavingII, collapse=TRUE}
+saveRDS(bsseq_obj, file = paste0 (OutputFolder, "bsseq_obj.rds"))
+```
+
+-   Filtered by sample and by CpGs covered by all samples kept
+
+```{r SavingIII, collapse=TRUE}
+saveRDS(methylSig::filter_loci_by_group_coverage(bs = bsseq_obj,group_column = "Line", min_samples_per_group = c("CTL08A" = dim(bsseq_obj)[2])), file = paste0 (OutputFolder, "bsseq_obj_sharedbyall.rds"))
+```
+
+-   With CpGs covered by 75% of all samples kept
+
+```{r SavingIV, collapse=TRUE}
+saveRDS(methylSig::filter_loci_by_group_coverage(bs = bsseq_obj,group_column = "Line", min_samples_per_group = c("CTL08A" = round(0.75*dim(bsseq_obj)[2], digits=0))), file = paste0 (OutputFolder, "bsseq_obj_sharedby75ofall.rds"))
+```
+
+Session Info
+
+```{r SaveSession}
+SessionInfo <- sessionInfo()
+Date <- date()
+```
+
+```{r SessionInfo}
+Date
+SessionInfo
+```

@@ -1,0 +1,248 @@
+---
+title: "DSS: Differential Methylation Analysis - Exploration of DMLtest results calling DMRs"
+author: "Gaja Matassa"
+date: 'Date: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        theme: 'united'
+        highlight: 'kate'
+        code_folding: hide
+params: 
+    InputFolder: '~/DataDir/2.DifferentialAnalysis/Output'
+    OutputFolder: '~/DataDir/2.DifferentialAnalysis/Output/DM/'
+---
+
+Vignettes: 
+
+* <https://compepigen.github.io/methrix_docs/articles/04-DMRs.html> 
+
+* <https://bioconductor.org/packages/release/bioc/vignettes/DSS/inst/doc/DSS.html#3_Using_DSS_for_BS-seq_differential_methylation_analysis> 
+
+* <https://compgenomr.github.io/book/bsseq.html> 
+
+
+**N.B. delta=0.25, p.threshold=0.0001**
+
+# 1. Environment setting
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, collapse=TRUE}
+library(DSS)
+library(plotly)
+library(ggplot2)
+library(scales)
+
+source("~/EGCLC_release/EMSeq/Methylation_helper.R")
+```
+
+```{r, collapse=TRUE}
+InputFolder <- params$InputFolder
+OutputFolder <- params$OutputFolder
+```
+
+# 2. Loading of BSSeq object
+
+Loading of bsseq object with CpGs shared by at least 75% of samples.
+
+```{r, collapse=TRUE}
+bsseq_obj <- readRDS("~/DataDir/2.DifferentialAnalysis/Input/bsseq_obj_sharedby75ofall.rds") #getting bsseq object where sample selection and CpG filtering were already performed 
+```
+
+**PCA plot**
+
+This PCA is done on the new filtered BSseq object (different from the one in the preliminary exploration script!)
+
+```{r}
+cellTypes_colors <- c(hiPSCs ="#dd1c77", iMeLCs ="#377eb8", hPGCLCs ="#4daf4a", hEGCLCs = "#ff7f00")
+```
+
+```{r, collapse=TRUE, fig.width=8}
+pca_res <- do_PCA(getMeth(BSseq = bsseq_obj, type = "raw"))
+plot_PCA(pca_res = pca_res, anno = pData(bsseq_obj), col_anno = "Type", shape_anno = NULL, custom_colors = cellTypes_colors, point_size = 5)
+```
+
+```{r, collapse=TRUE, fig.width=8}
+plot_PCA(pca_res = pca_res, anno = pData(bsseq_obj), col_anno = "Type", shape_anno = NULL, pc_x = "PC2", pc_y = "PC3", custom_colors = cellTypes_colors, point_size = 5)
+```
+
+# 3. Differential Methylation analysis  
+
+Loading results obtained with `DSS::DMLtest` function 
+
+```{r, collapse=TRUE}
+dml_tests_files <-  list.files(path = InputFolder, pattern = '*\\.rds', full.names = TRUE) 
+dml_tests_files
+```
+
+```{r}
+dml_tests_files <- dml_tests_files[-1]
+```
+
+Storing DMRs and DMLs
+Plotting number of DMRs
+
+```{r, collapse=TRUE}
+nr_tests <- length(dml_tests_files)
+
+DM_tests_Res <- list()
+DMR_Res <- list()
+DML_Res <- list()
+
+for(i in 1:nr_tests){
+  
+  DM_tests_Res[[i]] <- readRDS(dml_tests_files[i])
+  DMR_Res[[i]] <- list()
+  DML_Res[[i]] <- list()
+  
+  names(DM_tests_Res)[i] <- sub(".rds", "", basename(dml_tests_files))[i]
+  names(DMR_Res)[i] <- sub(".rds", "", basename(dml_tests_files))[i]
+  names(DML_Res)[i] <- sub(".rds", "", basename(dml_tests_files))[i]
+  
+  DMR_Res[[i]] <- callDMR(DM_tests_Res[[i]], delta=0.25, p.threshold=0.0001)
+  DML_Res[[i]] <- callDML(DM_tests_Res[[i]], delta=0.25, p.threshold=0.0001)
+  
+  }
+```
+
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=1, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot_length(DMR=DMR_Res, comparison=1)
+```
+
+```{r}
+data <- DMR_Res[[1]][["length"]]
+summary(data)
+
+# Create a density plot
+density_plot <- ggplot(data.frame(x = data), aes(x = x)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Density Plot with Median")
+
+# Calculate the median
+median_value <- median(data)
+
+# Add a vertical line for the median
+density_plot <- density_plot +
+  geom_vline(xintercept = median_value, color = "red", linetype = "dashed") +
+  annotate("text", x = median_value, y = 0.0002, label = paste("Median =", round(median_value, 2)), color = "red")
+
+# Display the plot
+print(density_plot)
+```
+
+```{r}
+#DMRbarplot(DMR=DMR_Res, comparison=2, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=3, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot_length(DMR=DMR_Res, comparison=3)
+```
+
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=4, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot_length(DMR=DMR_Res, comparison=4)
+```
+
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=5, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot_length(DMR=DMR_Res, comparison=5)
+```
+
+```{r}
+data <- DMR_Res[[5]][["length"]]
+summary(data)
+
+# Create a density plot
+density_plot <- ggplot(data.frame(x = data), aes(x = x)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Density Plot with Median")
+
+# Calculate the median
+median_value <- median(data)
+
+# Add a vertical line for the median
+density_plot <- density_plot +
+  geom_vline(xintercept = median_value, color = "red", linetype = "dashed") +
+  annotate("text", x = median_value, y = 0.0002, label = paste("Median =", round(median_value, 2)), color = "red")
+
+# Display the plot
+print(density_plot)
+```
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=6, y_lim = c(0,2400), interactive=TRUE)
+```
+
+
+```{r}
+DMRbarplot(DMR=DMR_Res, comparison=7, y_lim = c(0,2400), interactive=TRUE)
+```
+
+```{r}
+DMRbarplot_length(DMR=DMR_Res, comparison=7)
+```
+
+
+**Barplot with all together**
+
+```{r}
+comparisons <- c("hiPSCsvsiMeLCs", "iMeLCsvshPGCLCs", "hiPSCsvshPGCLCs", "hEGCLCsvshPGCLCs", "hEGCLCsvsiMeLCs", "hEGCLCsvshiPSCs") #ordered with criteria
+
+new_ylabel <- c("hiPSCsvsiMeLCs" = "iMeLCs vs hiPSCs", 
+                "iMeLCsvshPGCLCs" = "hPGCLCs vs iMeLCs", 
+                "hiPSCsvshPGCLCs" = "hPGCLCs vs hiPSCs",
+                "hEGCLCsvshPGCLCs" = "hPGCLCs vs hEGCLCs",
+                "hEGCLCsvsiMeLCs" = "iMeLCs vs hEGCLCs",
+                "hEGCLCsvshiPSCs" = "hiPSCs vs hEGCLCs")
+
+DMRbarplot_all(DMR=DMR_Res, comparisons_ordered=comparisons, label_y=new_ylabel, y_lim = 2400, interactive=TRUE)
+```
+
+
+# 4. Interesting FAQ
+
+N.B: Q: Why doesn't callDMR function return FDR for identified DMRs?
+
+A: In DMR calling, the statistical test is perform for each CpG, and then the significant CpG are merged into regions. It is very difficult to estimate FDR at the region-level, based on the site level test results (p-values or FDR). This is a difficult question for all types of genome-wide assays such as the ChIP-seq. So I rather not to report a DMR-level FDR if it's not accurate.
+
+# 5. Saving DMRs and DMLs and Session Info
+
+```{r SaveRDS}
+saveRDS(DM_tests_Res, paste0(InputFolder, '/', 'DML_test_results.rds'))
+saveRDS(DMR_Res, paste0(OutputFolder, '/', 'DMRs.rds'))
+saveRDS(DML_Res, paste0(OutputFolder, '/', 'DMLs.rds'))
+```
+
+
+```{r SaveSession}
+SessionInfo <- sessionInfo()
+Date <- date()
+```
+
+```{r SessionInfo}
+Date
+SessionInfo
+```

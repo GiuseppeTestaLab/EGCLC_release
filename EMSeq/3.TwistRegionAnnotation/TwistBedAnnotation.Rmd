@@ -1,0 +1,146 @@
+---
+title: "Genomic Annotation of Twist bed file with target regions"
+author: "Gaja Matassa"
+date: 'Date: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        theme: 'united'
+        highlight: 'kate'
+        code_folding: hide
+params: 
+    TwistBed: '~/DataDir/3.TwistBedAnn/Input/covered_targets_Twist_Methylome_hg38_annotated_collapsed.bed'
+    OutputFolder: '~/DataDir/3.TwistBedAnn/'
+---
+
+# 1. Environment setting
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, collapse = TRUE)
+```
+
+```{r, collapse=TRUE}
+library(GenomicRanges)
+library(plyranges)
+library(biomaRt)
+library(ChIPseeker)
+library(org.Hs.eg.db)
+library(annotatr)
+```
+
+Making txdb object from GTF file
+```{r}
+OutputFolder <- params$OutputFolder
+
+GTFFile <- "~/DataDir/3.TwistBedAnn/Input/gencode.v35.annotation.gtf.gz"
+txdb_v35 <- GenomicFeatures::makeTxDbFromGFF(GTFFile, format="gtf")
+```
+
+Importing bed file with regions targeted by Twist kit
+```{r}
+TwistBed <- params$TwistBed
+Twistbed <- as.data.frame(read.table(TwistBed,header = FALSE, sep="\t",stringsAsFactors=FALSE, quote=""))
+```
+
+```{r}
+colnames(Twistbed) <- c("chr", "start", "end", "ann")
+```
+
+Remember that position form bedGraph files are 0-based while R works with 1-based position and therefore also the packages we will go to use, this is the reason why I set `starts.in.df.are.0based = TRUE` in creating the GRanges objects, it converts 0-based to 1-based coordinates.
+
+```{r}
+Twist_Granges <- makeGRangesFromDataFrame(Twistbed, keep.extra.columns = TRUE, 
+                                                start.field = "start", end.field = "end", starts.in.df.are.0based = TRUE)
+```
+
+# 2. Genetic annotation and visualization with __`ChIPseeker`__
+
+DMRs are now annotated to their associated genes and genomic regions using the `annotatePeaks` function of the `ChIPseeker `R package, using a TxDb object. The [`GenomicFeatures`](https://bioconductor.org/packages/devel/bioc/vignettes/GenomicFeatures/inst/doc/GenomicFeatures.html) package uses `TxDb` objects to store transcript metadata. This class maps the 5’ and 3’ untranslated regions (UTRs), protein coding sequences (CDSs) and exons for a set of mRNA transcripts to their associated genome. 
+All `TxDb` objects are backed by a SQLite database that manages genomic locations and the relationships between pre-processed mRNA transcripts, exons, protein coding sequences, and their related gene identifiers.
+
+
+```{r, collapse=TRUE}
+peakAnno <- annotatePeak(Twist_Granges, TxDb=txdb_v35, tssRegion=c(-3000, 3000), verbose=TRUE, addFlankGeneInfo = TRUE) 
+```
+
+```{r, collapse=TRUE}
+plotAnnoPie(peakAnno)
+```
+
+```{r, collapse=TRUE}
+plotAnnoBar(peakAnno)
+```
+
+```{r}
+vennpie(peakAnno)
+```
+
+```{r}
+plotDistToTSS(peakAnno,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS")
+```
+
+# 3. Gene Annotation with biomaRt
+
+```{r}
+Host <- "https://aug2020.archive.ensembl.org"
+Specie <- "hsapiens"
+BioMart <- biomaRt::listMarts(host=Host)[1,1]
+Version <- biomaRt::listMarts(host=Host)[1,2]
+Mart <- biomaRt::useMart(host=Host, biomart=BioMart, version=Version, 
+                         dataset=paste0(Specie,'_gene_ensembl'))
+
+GeneVector = unique(as.data.frame(peakAnno)$geneId) #Genes assigned to the regions by chipseeker
+
+Attributes = c('ensembl_gene_id', 'ensembl_gene_id_version', 'hgnc_symbol', 'external_gene_name', 'gene_biotype',
+               'description', 'chromosome_name', 'start_position', 'end_position')
+
+GeneAnnotation <- biomaRt::getBM(mart=Mart, filters='ensembl_gene_id_version', values=GeneVector, attributes=Attributes, uniqueRows=TRUE)
+```
+
+```{r}
+GeneAnnotation <- GeneAnnotation[GeneAnnotation$chromosome_name %in% c(1:22, "X", "Y", "MT"),]
+GeneAnnotation <- GeneAnnotation %>% dplyr::filter(!duplicated(ensembl_gene_id_version))  
+
+if(length(unique(GeneAnnotation$ensembl_gene_id_version)) != length(GeneAnnotation$ensembl_gene_id_version)){
+  stop('ERROR: not-unique EnsemblID in annotation!')
+} 
+
+GeneVector[!GeneVector %in% GeneAnnotation$ensembl_gene_id_version] #ChipSeeker annotation that are not present in the biomart
+```
+
+```{r, collapse=TRUE}
+AnnotationFinal <- dplyr::left_join(as.data.frame(peakAnno), GeneAnnotation, by=c('geneId' = 'ensembl_gene_id_version')) 
+
+AnnotationFinal <- AnnotationFinal %>% rename("ensembl_gene_id_version"="geneId")
+```
+
+Here I save gene info
+```{r}
+Genes_df <- AnnotationFinal[, c("ensembl_gene_id_version", "ensembl_gene_id", "hgnc_symbol", "gene_biotype")] %>% dplyr::distinct()%>%filter(!is.na(hgnc_symbol))%>%filter(!hgnc_symbol%in%"")
+rownames(Genes_df) <- NULL
+```
+
+```{r}
+length(Genes_df$hgnc_symbol)
+```
+
+```{r}
+length(unique(Genes_df$hgnc_symbol))
+```
+
+```{r}
+Genes_df[Genes_df$hgnc_symbol%in%Genes_df[duplicated(Genes_df$hgnc_symbol), "hgnc_symbol"],]
+```
+
+# 4. Saving and session info
+
+```{r}
+saveRDS(AnnotationFinal, paste0(OutputFolder, "TwistAnnotated.rds"))
+```
+
+```{r, collapse=FALSE}
+date()
+sessionInfo()
+```
