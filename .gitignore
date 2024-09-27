@@ -6,3 +6,4 @@ data/MultiSeq_annotation_prefiltered_mtx.csv
 .Rproj.user
 .Rprofile
 .Rhistory
+.DS_Store
