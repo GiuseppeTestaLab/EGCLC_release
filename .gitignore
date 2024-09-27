@@ -4,3 +4,5 @@ data/*h5ad
 data/*_raw_feature_bc_matrix
 data/MultiSeq_annotation_prefiltered_mtx.csv
 .Rproj.user
+.Rprofile
+.Rhistory
